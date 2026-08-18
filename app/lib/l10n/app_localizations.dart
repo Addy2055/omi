@@ -798,7 +798,7 @@ abstract class AppLocalizations {
   /// Filter button for user's own apps
   ///
   /// In en, this message translates to:
-  /// **'My Apps'**
+  /// **'Created by me'**
   String get myApps;
 
   /// Filter button for installed apps
@@ -18344,6 +18344,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Turn off to prevent raw audio from being sent to Omi. Transcripts and data needed by cloud features may still be sent to Omi.'**
   String get sendRawAudioToOmiDescription;
+
+  /// Action that makes a nearby connected Omi pendant vibrate so the user can locate it
+  ///
+  /// In en, this message translates to:
+  /// **'Find'**
+  String get findDevice;
 }
 
 class _AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {
