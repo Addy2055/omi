@@ -174,7 +174,17 @@ def _request_has_llm_byok_key() -> bool:
     )
 
 
-def _is_trial_expired_uncached(uid: str, *, firestore_client: Any | None = None, provision: bool = True) -> bool:
+def _request_has_byok_provider(provider: str) -> bool:
+    return has_validated_byok_keys() and bool(get_byok_key(provider))
+
+
+def _is_trial_expired_uncached(
+    uid: str,
+    *,
+    firestore_client: Any | None = None,
+    provision: bool = True,
+    required_byok_provider: str | None = None,
+) -> bool:
     """Is this user past their 3-day desktop trial?
 
     The trial applies only to the Free Desktop tier. Neo may use that tier for
@@ -183,6 +193,8 @@ def _is_trial_expired_uncached(uid: str, *, firestore_client: Any | None = None,
     a Firebase blip never paywalls a paying user.
     """
     try:
+        if required_byok_provider and _request_has_byok_provider(required_byok_provider):
+            return False
         subscription = users_db.get_user_valid_subscription(uid, firestore_client=firestore_client, provision=provision)
         plan = subscription.plan if subscription else PlanType.basic
         if not desktop_trial_paywall_eligible(plan, subscription):
@@ -200,16 +212,29 @@ def _is_trial_expired_uncached(uid: str, *, firestore_client: Any | None = None,
         return False
 
 
-def _is_trial_expired_cached(uid: str, *, firestore_client: Any | None = None, provision: bool = True) -> bool:
+def _is_trial_expired_cached(
+    uid: str,
+    *,
+    firestore_client: Any | None = None,
+    provision: bool = True,
+    required_byok_provider: str | None = None,
+) -> bool:
     # Request-level escape hatch: a request carrying an enrolled LLM BYOK
     # provider header is never paywalled, regardless of cached Firestore state.
     # The cache TTL is 5 min and Firestore's BYOK `is_active` heartbeat is 24 h,
     # so even a perfectly-configured BYOK user can transiently look stale to
     # Firestore. Trust the live request.
-    if _request_has_llm_byok_key():
+    if required_byok_provider:
+        if _request_has_byok_provider(required_byok_provider):
+            return False
+    elif _request_has_llm_byok_key():
         return False
 
-    cache_key = f"trial_paywall:expired:{uid}"
+    cache_key = (
+        f"trial_paywall:expired:{uid}:{required_byok_provider}"
+        if required_byok_provider
+        else f"trial_paywall:expired:{uid}"
+    )
     cached = redis_db.get_generic_cache(cache_key)
     if cached is not None:
         # A cache entry may have been written before an entitlement correction
@@ -247,7 +272,12 @@ def _is_trial_expired_cached(uid: str, *, firestore_client: Any | None = None, p
                 )
                 return False
         return bool(cached)
-    expired = _is_trial_expired_uncached(uid, firestore_client=firestore_client, provision=provision)
+    expired = _is_trial_expired_uncached(
+        uid,
+        firestore_client=firestore_client,
+        provision=provision,
+        required_byok_provider=required_byok_provider,
+    )
     try:
         redis_db.set_generic_cache(cache_key, expired, ttl=_TRIAL_PAYWALL_CACHE_TTL_SECONDS)
     except Exception as e:
@@ -261,6 +291,7 @@ def is_trial_paywalled(
     *,
     firestore_client: Any | None = None,
     provision: bool = True,
+    required_byok_provider: str | None = None,
 ) -> bool:
     """True iff the request is from a desktop client AND the user has used
     their full 3-day free trial without subscribing or activating BYOK.
@@ -273,10 +304,13 @@ def is_trial_paywalled(
         return False  # trial paywall disabled — never block on account age
     if not platform or platform.lower() not in _TRIAL_PAYWALL_DESKTOP_TOKENS:
         return False
-    return _is_trial_expired_cached(uid, firestore_client=firestore_client, provision=provision)
+    return _is_trial_expired_cached(
+        uid, firestore_client=firestore_client, provision=provision, required_byok_provider=required_byok_provider
+    )
 
 
 def clear_trial_paywall_cache(uid: str) -> None:
+    redis_db.delete_generic_cache(f"trial_paywall:expired:{uid}:gemini")
     redis_db.delete_generic_cache(f"trial_paywall:expired:{uid}")
 
 
@@ -976,7 +1010,7 @@ def enforce_desktop_chat_quota(uid: str, platform: Optional[str] = None) -> None
     )
 
 
-def is_desktop_trial_paywalled(uid: str, platform: Optional[str]) -> bool:
+def is_desktop_trial_paywalled(uid: str, platform: Optional[str], *, required_byok_provider: str | None = None) -> bool:
     """Desktop trial gate against the customer Firestore, never a compute-project shadow.
 
     The decisions that need no Firestore run first: resolving the customer client
@@ -992,6 +1026,7 @@ def is_desktop_trial_paywalled(uid: str, platform: Optional[str]) -> bool:
         platform,
         firestore_client=get_customer_firestore_client(),
         provision=False,
+        required_byok_provider=required_byok_provider,
     )
 
 
